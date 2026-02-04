@@ -4,15 +4,30 @@ version = "1.0.0"
 rust-version = "1.86"
 authors = ["Q300Z"]
 description = "A simple and easy-to-use caching library for Rust."
-license-file = "LICENSE"
+license = "MIT"
 readme = "README.md"
 repository = "https://github.com/Q300Z/rustycache"
-homepage = "https://github.com/Q300Z/rustycache"
-keywords = ["cache", "ttl","LRU", "LFU", "FIFO"]
+keywords = ["cache", "ttl", "LRU", "LFU", "FIFO"]
 categories = ["caching"]
-
 edition = "2024"
 
 [dependencies]
 chrono = "0.4"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"], optional = true }
+parking_lot = "0.12"
+ahash = "0.8.12"
+
+[features]
+default = ["async"]
+async = ["dep:tokio"]
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["async_tokio"] }
+
+[[bench]]
+name = "cache_benchmarks"
+harness = false
+
+[[bench]]
+name = "contention_benchmarks"
+harness = false

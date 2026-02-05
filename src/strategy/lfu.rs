@@ -1,20 +1,34 @@
-use chrono::{DateTime, Utc};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use ahash::AHashMap as HashMap;
+use ahash::AHashSet as HashSet;
+use parking_lot::RwLock;
+use std::borrow::Borrow;
+use std::collections::BTreeMap;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Notify;
-use tokio::task;
-use tokio::time::sleep;
 use crate::strategy::CacheStrategy;
+use chrono::{DateTime, Utc};
+#[cfg(feature = "async")]
+use tokio::sync::Notify;
+#[cfg(feature = "async")]
+use tokio::task;
+#[cfg(feature = "async")]
+use tokio::time::sleep;
 
-struct CacheEntry<V> {
+struct CacheEntry<K, V> {
+    key: K,
     value: V,
     expires_at: DateTime<Utc>,
     frequency: usize,
 }
 
+struct LFUState<K, V> {
+    map: HashMap<K, CacheEntry<K, V>>,
+    freq_map: BTreeMap<usize, HashSet<K>>,
+}
+
+#[derive(Clone)]
 pub struct LFUCache<K, V>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
@@ -22,8 +36,8 @@ where
 {
     capacity: usize,
     ttl: Duration,
-    map: Arc<Mutex<HashMap<K, CacheEntry<V>>>>,
-    freq_map: Arc<Mutex<BTreeMap<usize, HashSet<K>>>>,
+    state: Arc<RwLock<LFUState<K, V>>>,
+    #[cfg(feature = "async")]
     notify_stop: Arc<Notify>,
 }
 
@@ -32,53 +46,31 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    pub fn new(capacity: usize, ttl: Duration, clean_interval: Duration) -> Self {
-        let cache = LFUCache {
+    pub fn new(capacity: usize, ttl: Duration, _clean_interval: Duration) -> Self {
+        LFUCache {
             capacity,
             ttl,
-            map: Arc::new(Mutex::new(HashMap::<K, CacheEntry<V>>::new())),
-            freq_map: Arc::new(Mutex::new(BTreeMap::new())),
+            state: Arc::new(RwLock::new(LFUState {
+                map: HashMap::default(),
+                freq_map: BTreeMap::new(),
+            })),
+            #[cfg(feature = "async")]
             notify_stop: Arc::new(Notify::new()),
-        };
+        }
+    }
 
-        let map_clone = Arc::clone(&cache.map);
-        let freq_map_clone = Arc::clone(&cache.freq_map);
-        let notify_clone = Arc::clone(&cache.notify_stop);
-
-        task::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = sleep(clean_interval) => {
-                        let now = Utc::now();
-                        let mut map = map_clone.lock().unwrap();
-                        let mut freq_map = freq_map_clone.lock().unwrap();
-                        let keys_to_remove: Vec<K> = map.iter()
-                            .filter_map(|(k, v)| {
-                                if v.expires_at <= now {
-                                    Some(k.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        for key in keys_to_remove {
-                            if let Some(entry) = map.remove(&key) {
-                                if let Some(set) = freq_map.get_mut(&entry.frequency) {
-                                    set.remove(&key);
-                                    if set.is_empty() {
-                                        freq_map.remove(&entry.frequency);
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    _ = notify_clone.notified() => break,
-                }
+    fn remove_entry_internal<Q>(key: &Q, freq: usize, state: &mut LFUState<K, V>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        state.map.remove(key);
+        if let Some(set) = state.freq_map.get_mut(&freq) {
+            set.remove(key);
+            if set.is_empty() {
+                state.freq_map.remove(&freq);
             }
-        });
-
-        cache
+        }
     }
 }
 
@@ -87,123 +79,148 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    fn put(&mut self, key: K, value: V) {
-        let mut map = self.map.lock().unwrap();
-        let mut freq_map = self.freq_map.lock().unwrap();
+    #[inline]
+    fn put(&self, key: K, value: V) {
+        let mut state = self.state.write();
 
-        if let Some(entry) = map.get_mut(&key) {
+        if let Some(entry) = state.map.get_mut(&key) {
             entry.value = value;
             entry.expires_at = Utc::now() + chrono::Duration::from_std(self.ttl).unwrap();
             return;
         }
 
-        if map.len() >= self.capacity {
-            if let Some((&min_freq, keys)) = freq_map.iter_mut().next() {
-                if let Some(k) = keys.iter().next().cloned() {
-                    keys.remove(&k);
-                    if keys.is_empty() {
-                        freq_map.remove(&min_freq);
-                    }
-                    map.remove(&k);
-                }
+        if state.map.len() >= self.capacity {
+            let to_remove = if let Some((&min_freq, keys)) = state.freq_map.iter().next() {
+                keys.iter().next().cloned().map(|k| (k, min_freq))
+            } else {
+                None
+            };
+
+            if let Some((k, freq)) = to_remove {
+                Self::remove_entry_internal(&k, freq, &mut state);
             }
         }
 
-        map.insert(key.clone(), CacheEntry {
-            value,
-            expires_at: Utc::now() + chrono::Duration::from_std(self.ttl).unwrap(),
-            frequency: 1,
-        });
+        state.map.insert(
+            key.clone(),
+            CacheEntry {
+                key: key.clone(),
+                value,
+                expires_at: Utc::now() + chrono::Duration::from_std(self.ttl).unwrap(),
+                frequency: 1,
+            },
+        );
 
-        freq_map.entry(1).or_insert_with(HashSet::new).insert(key);
+        state.freq_map.entry(1).or_default().insert(key);
     }
 
-    fn get(&mut self, key: &K) -> Option<V> {
-        let mut map = self.map.lock().unwrap();
-        let mut freq_map = self.freq_map.lock().unwrap();
+    #[inline]
+    fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut state = self.state.write();
 
-        if let Some(entry) = map.get_mut(key) {
+        let (old_freq, new_freq, val, k_clone) = if let Some(entry) = state.map.get_mut(key) {
+            let freq = entry.frequency;
             if entry.expires_at <= Utc::now() {
-                let freq = entry.frequency;
-                map.remove(key);
-                if let Some(set) = freq_map.get_mut(&freq) {
-                    set.remove(key);
-                    if set.is_empty() {
-                        freq_map.remove(&freq);
-                    }
-                }
+                Self::remove_entry_internal(key, freq, &mut state);
                 return None;
             }
 
-            let old_freq = entry.frequency;
             entry.frequency += 1;
+            (
+                freq,
+                entry.frequency,
+                entry.value.clone(),
+                entry.key.clone(),
+            )
+        } else {
+            return None;
+        };
 
-            if let Some(set) = freq_map.get_mut(&old_freq) {
-                set.remove(key);
-                if set.is_empty() {
-                    freq_map.remove(&old_freq);
-                }
-            }
-
-            freq_map
-                .entry(entry.frequency)
-                .or_insert_with(HashSet::new)
-                .insert(key.clone());
-
-            return Some(entry.value.clone());
-        }
-
-        None
-    }
-
-    fn remove(&mut self, key: &K) {
-        let mut map = self.map.lock().unwrap();
-        let mut freq_map = self.freq_map.lock().unwrap();
-
-        if let Some(entry) = map.remove(key) {
-            if let Some(set) = freq_map.get_mut(&entry.frequency) {
-                set.remove(key);
-                if set.is_empty() {
-                    freq_map.remove(&entry.frequency);
-                }
+        // Update freq_map
+        if let Some(set) = state.freq_map.get_mut(&old_freq) {
+            set.remove(key);
+            if set.is_empty() {
+                state.freq_map.remove(&old_freq);
             }
         }
+
+        state.freq_map.entry(new_freq).or_default().insert(k_clone);
+
+        Some(val)
     }
 
-    fn contains(&self, key: &K) -> bool {
-        let map = self.map.lock().unwrap();
-        map.contains_key(key)
+    #[inline]
+    fn remove<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut state = self.state.write();
+
+        if let Some(entry) = state.map.get(key) {
+            let freq = entry.frequency;
+            Self::remove_entry_internal(key, freq, &mut state);
+        }
     }
 
+    #[inline]
+    fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let state = self.state.read();
+        state.map.contains_key(key)
+    }
+
+    #[inline]
     fn len(&self) -> usize {
-        let map = self.map.lock().unwrap();
-        map.len()
+        let state = self.state.read();
+        state.map.len()
     }
+    #[inline]
     fn is_empty(&self) -> bool {
-        let map = self.map.lock().unwrap();
-        map.is_empty()
+        let state = self.state.read();
+        state.map.is_empty()
     }
-    fn clear(&mut self) {
-        let mut map = self.map.lock().unwrap();
-        let mut freq_map = self.freq_map.lock().unwrap();
-        map.clear();
-        freq_map.clear();
+    #[inline]
+    fn clear(&self) {
+        let mut state = self.state.write();
+        state.map.clear();
+        state.freq_map.clear();
     }
 
+    #[cfg(feature = "async")]
     fn start_cleaner(&self, clean_interval: Duration) {
-        let map = Arc::clone(&self.map);
-        let notify = Arc::clone(&self.notify_stop);
+        let state_clone = Arc::clone(&self.state);
+        let notify_clone = Arc::clone(&self.notify_stop);
 
         task::spawn(async move {
             loop {
                 tokio::select! {
                     _ = sleep(clean_interval) => {
                         let now = Utc::now();
-                        let mut map = map.lock().unwrap();
+                        let mut state = state_clone.write();
 
-                        map.retain(|_key, entry| entry.expires_at > now);
+                        let keys_to_remove: Vec<(K, usize)> = state.map.iter()
+                            .filter_map(|(k, v)| {
+                                if v.expires_at <= now {
+                                    Some((k.clone(), v.frequency))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        for (key, freq) in keys_to_remove {
+                            Self::remove_entry_internal(&key, freq, &mut state);
+                        }
                     }
-                    _ = notify.notified() => {
+                    _ = notify_clone.notified() => {
                         break;
                     }
                 }
@@ -211,7 +228,19 @@ where
         });
     }
 
+    #[cfg(feature = "async")]
     fn stop_cleaner(&self) {
         self.notify_stop.notify_waiters();
+    }
+}
+
+#[cfg(feature = "async")]
+impl<K, V> Drop for LFUCache<K, V>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        self.stop_cleaner();
     }
 }

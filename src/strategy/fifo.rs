@@ -1,19 +1,36 @@
-use chrono::{DateTime, Utc};
-use std::collections::{HashMap, VecDeque};
+use ahash::AHashMap as HashMap;
+use parking_lot::RwLock;
+use std::borrow::Borrow;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Notify;
-use tokio::task;
-use tokio::time::sleep;
 use crate::strategy::CacheStrategy;
+use chrono::{DateTime, Utc};
+#[cfg(feature = "async")]
+use tokio::sync::Notify;
+#[cfg(feature = "async")]
+use tokio::task;
+#[cfg(feature = "async")]
+use tokio::time::sleep;
 
-struct CacheEntry<V> {
+struct Node<K, V> {
+    key: K,
     value: V,
     expires_at: DateTime<Utc>,
+    prev: Option<u32>,
+    next: Option<u32>,
 }
 
+struct FIFOState<K, V> {
+    map: HashMap<K, u32>,
+    nodes: Vec<Option<Node<K, V>>>,
+    free_indices: Vec<u32>,
+    head: Option<u32>,
+    tail: Option<u32>,
+}
+
+#[derive(Clone)]
 pub struct FIFOCache<K, V>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
@@ -21,8 +38,8 @@ where
 {
     capacity: usize,
     ttl: Duration,
-    map: Arc<Mutex<HashMap<K, CacheEntry<V>>>>,
-    order: Arc<Mutex<VecDeque<K>>>,
+    state: Arc<RwLock<FIFOState<K, V>>>,
+    #[cfg(feature = "async")]
     notify_stop: Arc<Notify>,
 }
 
@@ -31,17 +48,61 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    pub fn new(capacity: usize, ttl: Duration, clean_interval: Duration) -> Self {
-        let cache = FIFOCache {
+    pub fn new(capacity: usize, ttl: Duration, _clean_interval: Duration) -> Self {
+        FIFOCache {
             capacity,
             ttl,
-            map: Arc::new(Mutex::new(HashMap::new())),
-            order: Arc::new(Mutex::new(VecDeque::new())),
+            state: Arc::new(RwLock::new(FIFOState {
+                map: HashMap::default(),
+                nodes: Vec::with_capacity(capacity),
+                free_indices: Vec::new(),
+                head: None,
+                tail: None,
+            })),
+            #[cfg(feature = "async")]
             notify_stop: Arc::new(Notify::new()),
+        }
+    }
+
+    fn detach_node(state: &mut FIFOState<K, V>, node_idx: u32) {
+        let (prev, next) = {
+            let node = state.nodes[node_idx as usize].as_ref().unwrap();
+            (node.prev, node.next)
         };
 
-        cache.start_cleaner(clean_interval);
-        cache
+        if let Some(p) = prev {
+            state.nodes[p as usize].as_mut().unwrap().next = next;
+        } else {
+            state.head = next;
+        }
+
+        if let Some(n) = next {
+            state.nodes[n as usize].as_mut().unwrap().prev = prev;
+        } else {
+            state.tail = prev;
+        }
+    }
+
+    fn push_back(state: &mut FIFOState<K, V>, node_idx: u32) {
+        let old_tail = state.tail;
+        if let Some(ot) = old_tail {
+            state.nodes[ot as usize].as_mut().unwrap().next = Some(node_idx);
+        } else {
+            state.head = Some(node_idx);
+        }
+
+        let node = state.nodes[node_idx as usize].as_mut().unwrap();
+        node.next = None;
+        node.prev = old_tail;
+        state.tail = Some(node_idx);
+    }
+
+    fn remove_node_internal(state: &mut FIFOState<K, V>, node_idx: u32) {
+        Self::detach_node(state, node_idx);
+        if let Some(node) = state.nodes[node_idx as usize].take() {
+            state.map.remove(&node.key);
+            state.free_indices.push(node_idx);
+        }
     }
 }
 
@@ -50,76 +111,130 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    fn put(&mut self, key: K, value: V) {
-        let mut map = self.map.lock().unwrap();
-        let mut order = self.order.lock().unwrap();
-
-        if map.contains_key(&key) {
-            return; // FIFO ne met pas à jour les valeurs existantes
+    #[inline]
+    fn put(&self, key: K, value: V) {
+        let mut state = self.state.write();
+        if state.map.contains_key(&key) {
+            return;
         }
 
-        if order.len() >= self.capacity {
-            if let Some(oldest) = order.pop_front() {
-                map.remove(&oldest);
+        if state.map.len() >= self.capacity
+            && let Some(oldest_idx) = state.head
+        {
+            Self::remove_node_internal(&mut state, oldest_idx);
+        }
+
+        let expires_at = Utc::now() + chrono::Duration::from_std(self.ttl).unwrap();
+
+        let node_idx = if let Some(idx) = state.free_indices.pop() {
+            state.nodes[idx as usize] = Some(Node {
+                key: key.clone(),
+                value,
+                expires_at,
+                prev: None,
+                next: None,
+            });
+            idx
+        } else {
+            let idx = state.nodes.len() as u32;
+            state.nodes.push(Some(Node {
+                key: key.clone(),
+                value,
+                expires_at,
+                prev: None,
+                next: None,
+            }));
+            idx
+        };
+
+        state.map.insert(key, node_idx);
+        Self::push_back(&mut state, node_idx);
+    }
+
+    #[inline]
+    fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        // Try read lock
+        {
+            let state = self.state.read();
+            if let Some(&node_idx) = state.map.get(key) {
+                let node = state.nodes[node_idx as usize].as_ref().unwrap();
+                if node.expires_at > Utc::now() {
+                    return Some(node.value.clone());
+                }
+            } else {
+                return None;
             }
         }
 
-        order.push_back(key.clone());
-        map.insert(
-            key,
-            CacheEntry {
-                value,
-                expires_at: Utc::now() + chrono::Duration::from_std(self.ttl).unwrap(),
-            },
-        );
-    }
-
-    fn get(&mut self, key: &K) -> Option<V> {
-        let map = self.map.lock().unwrap();
-        if let Some(entry) = map.get(key) {
-            if entry.expires_at > Utc::now() {
-                return Some(entry.value.clone());
+        // Handle expiration
+        let mut state = self.state.write();
+        if let Some(&node_idx) = state.map.get(key) {
+            if state.nodes[node_idx as usize].as_ref().unwrap().expires_at <= Utc::now() {
+                Self::remove_node_internal(&mut state, node_idx);
             } else {
-                drop(map); // release before relocking
-                let mut map = self.map.lock().unwrap();
-                let mut order = self.order.lock().unwrap();
-                map.remove(key);
-                order.retain(|k| k != key);
+                return Some(
+                    state.nodes[node_idx as usize]
+                        .as_ref()
+                        .unwrap()
+                        .value
+                        .clone(),
+                );
             }
         }
         None
     }
 
-    fn remove(&mut self, key: &K) {
-        let mut map = self.map.lock().unwrap();
-        let mut order = self.order.lock().unwrap();
-        map.remove(key);
-        order.retain(|k| k != key);
+    #[inline]
+    fn remove<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut state = self.state.write();
+        if let Some(&node_idx) = state.map.get(key) {
+            Self::remove_node_internal(&mut state, node_idx);
+        }
     }
 
-    fn contains(&self, key: &K) -> bool {
-        let map = self.map.lock().unwrap();
-        map.contains_key(key)
+    #[inline]
+    fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let state = self.state.read();
+        state.map.contains_key(key)
     }
 
+    #[inline]
     fn len(&self) -> usize {
-        let map = self.map.lock().unwrap();
-        map.len()
-    }
-    fn is_empty(&self) -> bool {
-        let map = self.map.lock().unwrap();
-        map.is_empty()
-    }
-    fn clear(&mut self) {
-        let mut map = self.map.lock().unwrap();
-        let mut order = self.order.lock().unwrap();
-        map.clear();
-        order.clear();
+        let state = self.state.read();
+        state.map.len()
     }
 
+    #[inline]
+    fn is_empty(&self) -> bool {
+        let state = self.state.read();
+        state.map.is_empty()
+    }
+
+    #[inline]
+    fn clear(&self) {
+        let mut state = self.state.write();
+        state.map.clear();
+        state.nodes.clear();
+        state.free_indices.clear();
+        state.head = None;
+        state.tail = None;
+    }
+
+    #[cfg(feature = "async")]
     fn start_cleaner(&self, clean_interval: Duration) {
-        let map = Arc::clone(&self.map);
-        let order = Arc::clone(&self.order);
+        let state_clone = Arc::clone(&self.state);
         let notify = Arc::clone(&self.notify_stop);
 
         task::spawn(async move {
@@ -127,14 +242,18 @@ where
                 tokio::select! {
                     _ = sleep(clean_interval) => {
                         let now = Utc::now();
-                        let mut map = map.lock().unwrap();
-                        let mut order = order.lock().unwrap();
+                        let mut state = state_clone.write();
+                        let mut indices_to_remove = Vec::new();
 
-                        order.retain(|key| {
-                            map.get(key).map_or(false, |entry| entry.expires_at > now)
-                        });
+                        for (_, &idx) in state.map.iter() {
+                            if let Some(node) = &state.nodes[idx as usize] && node.expires_at <= now {
+                                indices_to_remove.push(idx);
+                            }
+                        }
 
-                        map.retain(|_key, entry| entry.expires_at > now);
+                        for idx in indices_to_remove {
+                            Self::remove_node_internal(&mut state, idx);
+                        }
                     }
                     _ = notify.notified() => {
                         break;
@@ -144,7 +263,19 @@ where
         });
     }
 
+    #[cfg(feature = "async")]
     fn stop_cleaner(&self) {
         self.notify_stop.notify_waiters();
+    }
+}
+
+#[cfg(feature = "async")]
+impl<K, V> Drop for FIFOCache<K, V>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        self.stop_cleaner();
     }
 }

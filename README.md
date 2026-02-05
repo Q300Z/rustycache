@@ -1,85 +1,109 @@
-# RustyCache Rust Library
+# RustyCache
+
 ![Rust](https://img.shields.io/badge/Rust-lang-000000.svg?style=flat&logo=rust)
-[![Rust](https://github.com/Q300Z/easycache/actions/workflows/ci.yml/badge.svg)](https://github.com/Q300Z/easycache/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/rustycache.svg)](https://crates.io/crates/rustycache)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A generic, thread-safe, asynchronous cache library in Rust implementing multiple cache eviction strategies with TTL and background cleaning.
+**RustyCache** is an ultra-high-performance, sharded, and thread-safe caching library for Rust. Engineered for extreme
+concurrency, it features index-based O(1) eviction algorithms and zero-cost abstractions.
 
-## Features
+## 🚀 Performance & Optimizations
 
-- Supports multiple cache eviction strategies:
-    - **LFU** (Least Frequently Used)
-    - **FIFO** (First In First Out)
-- Thread-safe with `Arc<Mutex<...>>`
-- Time-to-live (TTL) expiration on entries
-- Background cleaner task using Tokio async runtime
-- Generic over keys and values (with necessary trait bounds)
-- Simple trait-based `CacheStrategy` interface for easy extension
+RustyCache is optimized for modern CPU architectures and high-throughput requirements:
 
-## Usage
+- **Index-based Arena (O(1))**: LRU and FIFO strategies use a `Vec`-based arena with `usize` indices for the doubly
+  linked list. This **eliminates key cloning** during priority updates, drastically reducing CPU overhead and memory
+  pressure.
+- **Sharded Locking**: Internal partitioning (sharding) minimizes lock contention, allowing linear scaling with CPU core
+  counts.
+- **Static Dispatch**: A fully generic architecture removes dynamic dispatch (`Box<dyn>`) overhead, enabling deep
+  compiler inlining.
+- **Fast Hashing**: Powered by **AHash**, the most efficient non-cryptographic hasher available for Rust.
+- **Optimized Mutexes**: Uses **Parking Lot** for fast, compact, and non-poisoning synchronization primitives.
 
-### Add dependency
+## ✨ Features
 
-Add this crate to your `Cargo.toml`:
+- **Multiple Strategies**:
+    - `LRU` (Least Recently Used)
+    - `LFU` (Least Frequently Used)
+    - `FIFO` (First In First Out)
+- **Time-To-Live (TTL)**: Automatic entry expiration.
+- **Hybrid Async/Sync**:
+    - **Async Mode**: Background worker task for proactive expiration cleaning (requires `tokio`).
+    - **Sync Mode**: Zero-dependency, passive expiration for ultra-low-overhead environments.
+- **Thread-Safe**: Designed for safe concurrent access.
+- **Generic**: Supports any key `K` and value `V` that implement `Clone + Hash + Eq`.
+
+## 📦 Installation
+
+Add to your `Cargo.toml`:
 
 ```toml
-rustycache = { path = "path/to/rustycache" }
-```
-Or if published on crates.io, replace with version:
-```toml
+[dependencies]
+# Default: async feature enabled
 rustycache = "1.0"
+
+# For pure synchronous environments (no tokio)
+# rustycache = { version = "1.0", default-features = false }
 ```
-### Example: Using LFU Cache
+
+## 🛠 Usage
+
+### Asynchronous Mode (Default)
+
 ```rust
-use easycache::LFUCache;
+use rustycache::rustycache::Rustycache;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    // Create LFU cache with capacity 100, TTL 60 seconds, cleaner interval 10 seconds
-    let mut cache = Easycache::new(100, Duration::from_secs(60), Duration::from_secs(10), easycache::strategy::StrategyType::LFU);
+    // 16 shards, 10k capacity, 5m TTL, 60s cleanup interval
+    let cache = Rustycache::lru(16, 10000, Duration::from_secs(300), Duration::from_secs(60));
 
-    // Put some values
-    cache.put("key1".to_string(), "value1".to_string());
-    cache.put("key2".to_string(), "value2".to_string());
-
-    // Get a value
-    if let Some(val) = cache.get(&"key1".to_string()) {
-        println!("Got: {}", val);
-    } else {
-        println!("Key expired or not found");
-    }
+    cache.put("key".to_string(), "value".to_string());
+    let val = cache.get(&"key".to_string());
 }
 ```
-### Example: Using FIFO Cache
+
+### Synchronous Mode
+
 ```rust
-use easycache::FIFOCache;
+use rustycache::rustycache::Rustycache;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() {
-    // Create FIFO cache with capacity 50, TTL 120 seconds, cleaner interval 15 seconds
-    let mut cache = Easycache::new(50, Duration::from_secs(120), Duration::from_secs(15), easycache::strategy::StrategyType::FIFO);
-
-    // Put some values
-    cache.put("foo".to_string(), 123);
-    cache.put("bar".to_string(), 456);
-
-    // Get a value
-    if let Some(val) = cache.get(&"foo".to_string()) {
-        println!("Got: {}", val);
-    } else {
-        println!("Key expired or not found");
-    }
+fn main() {
+    let cache = Rustycache::lru_sync(8, 1000, Duration::from_secs(60));
+    cache.put("key".to_string(), 42);
+    assert_eq!(cache.get(&"key".to_string()), Some(42));
 }
 ```
-## Testing
-To run the tests, use the following command:
+
+## 📊 Benchmarks
+
+*Results measured on 10,000 elements with 16 shards.*
+
+| Operation     | Strategy | Latency     | Complexity |
+|:--------------|:---------|:------------|:-----------|
+| **Get (Hit)** | LRU      | **~128 ns** | **O(1)**   |
+| **Get (Hit)** | FIFO     | **~117 ns** | **O(1)**   |
+| **Get (Hit)** | LFU      | **~205 ns** | O(log N)   |
+
+### Throughput (Scaling)
+
+RustyCache scales exceptionally well under heavy thread contention:
+
+- **1 Thread**: ~8.0 Million ops/sec
+- **8 Threads**: **~23.0 Million ops/sec** (on 8-core machine)
+
+*Note: For large keys (e.g., 4KB), performance is dominated by hashing (~700ns), regardless of the strategy.*
+
+## 🧪 Testing
 
 ```bash
 cargo test
+cargo test --no-default-features
 ```
-Tests cover cache insertion, eviction, TTL expiration, concurrency safety, and cleanup logic.
-## License
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## 📜 License
+
+MIT License - see [LICENSE](LICENSE) file for details.

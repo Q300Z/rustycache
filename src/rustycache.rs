@@ -1,63 +1,169 @@
-use std::time::Duration;
-use crate::strategy::{CacheStrategy, StrategyType};
+use crate::strategy::CacheStrategy;
 use crate::strategy::fifo::FIFOCache;
 use crate::strategy::lfu::LFUCache;
 use crate::strategy::lru::LRUCache;
+use ahash::RandomState;
+use std::borrow::Borrow;
+use std::hash::Hash;
+use std::time::Duration;
 
-pub struct Rustycache<K, V> {
-    inner: Box<dyn CacheStrategy<K, V>>,
+/// A high-performance, sharded, and thread-safe cache.
+pub struct Rustycache<K, V, S> {
+    shards: Vec<S>,
+    hasher: RandomState,
+    _phantom: std::marker::PhantomData<(K, V)>,
 }
 
-impl<K, V> Rustycache<K, V>
+impl<K, V, S> Rustycache<K, V, S>
 where
-    K: 'static + Send + Sync + Clone + Eq + std::hash::Hash,
+    K: 'static + Send + Sync + Clone + Eq + Hash,
+    V: 'static + Send + Sync + Clone,
+    S: CacheStrategy<K, V>,
+{
+    pub fn new(num_shards: usize, shard_factory: impl Fn() -> S) -> Self {
+        let mut shards = Vec::with_capacity(num_shards);
+        for _ in 0..num_shards {
+            shards.push(shard_factory());
+        }
+
+        Rustycache {
+            shards,
+            hasher: RandomState::new(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    #[inline]
+    fn get_shard<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> &S
+    where
+        K: Borrow<Q>,
+    {
+        let hash = self.hasher.hash_one(key);
+        &self.shards[(hash as usize) % self.shards.len()]
+    }
+
+    #[inline]
+    pub fn put(&self, key: K, value: V) {
+        let hash = self.hasher.hash_one(&key);
+        self.shards[(hash as usize) % self.shards.len()].put(key, value);
+    }
+
+    #[inline]
+    pub fn get<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        self.get_shard(key).get(key)
+    }
+
+    #[inline]
+    pub fn remove<Q: Hash + Eq + ?Sized>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+    {
+        self.get_shard(key).remove(key)
+    }
+
+    #[inline]
+    pub fn contains<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.get_shard(key).contains(key)
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|s| s.len()).sum()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.shards.iter().all(|s| s.is_empty())
+    }
+
+    #[inline]
+    pub fn clear(&self) {
+        for shard in &self.shards {
+            shard.clear();
+        }
+    }
+}
+
+impl<K, V> Rustycache<K, V, LRUCache<K, V>>
+where
+    K: 'static + Send + Sync + Clone + Eq + Hash,
     V: 'static + Send + Sync + Clone,
 {
-    pub fn new(cap: usize, ttl: Duration, clean_interval: Duration, strat: StrategyType) -> Self {
-        let inner: Box<dyn CacheStrategy<K, V>> = match strat {
-            StrategyType::LRU => Box::new(LRUCache::new(cap, ttl, clean_interval)),
-            StrategyType::FIFO => Box::new(FIFOCache::new(cap, ttl, clean_interval)),
-            StrategyType::LFU => Box::new(LFUCache::new(cap, ttl, clean_interval)),
-        };
-
-        inner.start_cleaner(clean_interval);
-
-        Rustycache { inner }
+    #[cfg(feature = "async")]
+    pub fn lru(
+        num_shards: usize,
+        capacity: usize,
+        ttl: Duration,
+        clean_interval: Duration,
+    ) -> Self {
+        Self::new(num_shards, move || {
+            let shard = LRUCache::new(capacity / num_shards + 1, ttl, clean_interval);
+            shard.start_cleaner(clean_interval);
+            shard
+        })
     }
 
-    pub fn put(&mut self, key: K, value: V) {
-        self.inner.put(key, value)
+    pub fn lru_sync(num_shards: usize, capacity: usize, ttl: Duration) -> Self {
+        Self::new(num_shards, move || {
+            LRUCache::new(capacity / num_shards + 1, ttl, Duration::from_secs(0))
+        })
+    }
+}
+
+impl<K, V> Rustycache<K, V, FIFOCache<K, V>>
+where
+    K: 'static + Send + Sync + Clone + Eq + Hash,
+    V: 'static + Send + Sync + Clone,
+{
+    #[cfg(feature = "async")]
+    pub fn fifo(
+        num_shards: usize,
+        capacity: usize,
+        ttl: Duration,
+        clean_interval: Duration,
+    ) -> Self {
+        Self::new(num_shards, move || {
+            let shard = FIFOCache::new(capacity / num_shards + 1, ttl, clean_interval);
+            shard.start_cleaner(clean_interval);
+            shard
+        })
     }
 
-    pub fn get(&mut self, key: &K) -> Option<V> {
-        self.inner.get(key)
+    pub fn fifo_sync(num_shards: usize, capacity: usize, ttl: Duration) -> Self {
+        Self::new(num_shards, move || {
+            FIFOCache::new(capacity / num_shards + 1, ttl, Duration::from_secs(0))
+        })
+    }
+}
+
+impl<K, V> Rustycache<K, V, LFUCache<K, V>>
+where
+    K: 'static + Send + Sync + Clone + Eq + Hash,
+    V: 'static + Send + Sync + Clone,
+{
+    #[cfg(feature = "async")]
+    pub fn lfu(
+        num_shards: usize,
+        capacity: usize,
+        ttl: Duration,
+        clean_interval: Duration,
+    ) -> Self {
+        Self::new(num_shards, move || {
+            let shard = LFUCache::new(capacity / num_shards + 1, ttl, clean_interval);
+            shard.start_cleaner(clean_interval);
+            shard
+        })
     }
 
-    pub fn remove(&mut self, key: &K) {
-        self.inner.remove(key)
-    }
-
-    pub fn contains(&self, key: &K) -> bool {
-        self.inner.contains(key)
-    }
-
-    pub fn stop_cleaner(&self) {
-        self.inner.stop_cleaner()
-    }
-
-    pub fn start_cleaner(&self, interval: Duration) {
-        self.inner.start_cleaner(interval)
-    }
-    
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-    
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-    
-    pub fn clear(&mut self) {
-        self.inner.clear()
+    pub fn lfu_sync(num_shards: usize, capacity: usize, ttl: Duration) -> Self {
+        Self::new(num_shards, move || {
+            LFUCache::new(capacity / num_shards + 1, ttl, Duration::from_secs(0))
+        })
     }
 }

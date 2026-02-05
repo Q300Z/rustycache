@@ -8,7 +8,12 @@ mod fifo_tests {
     #[cfg(feature = "async")]
     use tokio::time::sleep;
 
-    fn create_cache(capacity: usize, ttl_secs: u64, clean_interval_secs: u64, _start_cleaner: bool) -> Rustycache<String, String, FIFOCache<String, String>> {
+    fn create_cache(
+        capacity: usize,
+        ttl_secs: u64,
+        clean_interval_secs: u64,
+        _start_cleaner: bool,
+    ) -> Rustycache<String, String, FIFOCache<String, String>> {
         let ttl = Duration::from_secs(ttl_secs);
         let interval = Duration::from_secs(clean_interval_secs);
         let s = FIFOCache::new(capacity, ttl, interval);
@@ -104,7 +109,6 @@ mod fifo_tests {
         assert_eq!(cache.get(&"a".to_string()), Some("b".to_string()));
     }
 
-
     #[cfg(feature = "async")]
     #[tokio::test]
 
@@ -120,5 +124,3 @@ mod fifo_tests {
         drop(cache);
     }
 }
-
-    

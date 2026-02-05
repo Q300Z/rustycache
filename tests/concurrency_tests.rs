@@ -1,17 +1,22 @@
-use std::time::Duration;
-#[cfg(feature = "async")]
-use std::sync::Arc;
-#[cfg(feature = "async")]
-use tokio::sync::Barrier;
 use rustycache::rustycache::Rustycache;
 #[cfg(feature = "async")]
 use rustycache::strategy::CacheStrategy;
+#[cfg(feature = "async")]
+use std::sync::Arc;
+use std::time::Duration;
+#[cfg(feature = "async")]
+use tokio::sync::Barrier;
 
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_concurrent_put_get_lru() {
     let capacity = 100;
-    let cache = Arc::new(Rustycache::lru(8, capacity, Duration::from_secs(10), Duration::from_secs(60)));
+    let cache = Arc::new(Rustycache::lru(
+        8,
+        capacity,
+        Duration::from_secs(10),
+        Duration::from_secs(60),
+    ));
     run_concurrency_test(cache).await;
 }
 
@@ -19,7 +24,12 @@ async fn test_concurrent_put_get_lru() {
 #[tokio::test]
 async fn test_concurrent_put_get_fifo() {
     let capacity = 100;
-    let cache = Arc::new(Rustycache::fifo(8, capacity, Duration::from_secs(10), Duration::from_secs(60)));
+    let cache = Arc::new(Rustycache::fifo(
+        8,
+        capacity,
+        Duration::from_secs(10),
+        Duration::from_secs(60),
+    ));
     run_concurrency_test(cache).await;
 }
 
@@ -27,13 +37,19 @@ async fn test_concurrent_put_get_fifo() {
 #[tokio::test]
 async fn test_concurrent_put_get_lfu() {
     let capacity = 100;
-    let cache = Arc::new(Rustycache::lfu(8, capacity, Duration::from_secs(10), Duration::from_secs(60)));
+    let cache = Arc::new(Rustycache::lfu(
+        8,
+        capacity,
+        Duration::from_secs(10),
+        Duration::from_secs(60),
+    ));
     run_concurrency_test(cache).await;
 }
 
 #[cfg(feature = "async")]
-async fn run_concurrency_test<S>(cache: Arc<Rustycache<String, String, S>>) 
-where S: CacheStrategy<String, String> + 'static
+async fn run_concurrency_test<S>(cache: Arc<Rustycache<String, String, S>>)
+where
+    S: CacheStrategy<String, String> + 'static,
 {
     let num_threads = 10;
     let ops_per_thread = 1000;
@@ -43,13 +59,13 @@ where S: CacheStrategy<String, String> + 'static
     for t in 0..num_threads {
         let cache_clone = Arc::clone(&cache);
         let barrier_clone = Arc::clone(&barrier);
-        
+
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
             for i in 0..ops_per_thread {
-                let key = (i % 200).to_string(); 
+                let key = (i % 200).to_string();
                 let val = format!("thread-{}-val-{}", t, i);
-                
+
                 if i % 2 == 0 {
                     cache_clone.put(key, val);
                 } else {

@@ -8,7 +8,12 @@ mod lfu_tests {
     #[cfg(feature = "async")]
     use tokio::time::sleep;
 
-    fn create_cache(capacity: usize, ttl_secs: u64, clean_interval_secs: u64, _start_cleaner: bool) -> Rustycache<String, String, LFUCache<String, String>> {
+    fn create_cache(
+        capacity: usize,
+        ttl_secs: u64,
+        clean_interval_secs: u64,
+        _start_cleaner: bool,
+    ) -> Rustycache<String, String, LFUCache<String, String>> {
         let ttl = Duration::from_secs(ttl_secs);
         let interval = Duration::from_secs(clean_interval_secs);
         let s = LFUCache::new(capacity, ttl, interval);
@@ -121,7 +126,6 @@ mod lfu_tests {
         assert_eq!(cache.get(&"a".to_string()), Some("b".to_string()));
     }
 
-
     #[test]
 
     fn test_explicit_drop() {
@@ -130,5 +134,3 @@ mod lfu_tests {
         drop(cache);
     }
 }
-
-    

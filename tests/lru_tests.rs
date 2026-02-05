@@ -8,7 +8,12 @@ mod lru_tests {
     #[cfg(feature = "async")]
     use tokio::time::sleep;
 
-    fn create_cache(capacity: usize, ttl_secs: u64, interval_secs: u64, _start_cleaner: bool) -> Rustycache<String, String, LRUCache<String, String>> {
+    fn create_cache(
+        capacity: usize,
+        ttl_secs: u64,
+        interval_secs: u64,
+        _start_cleaner: bool,
+    ) -> Rustycache<String, String, LRUCache<String, String>> {
         let ttl = Duration::from_secs(ttl_secs);
         let interval = Duration::from_secs(interval_secs);
         let s = LRUCache::new(capacity, ttl, interval);
@@ -42,7 +47,7 @@ mod lru_tests {
         let cache = create_cache(2, 5, 60, false);
         let key = "string_key".to_string();
         cache.put(key, "value".to_string());
-        
+
         // Lookup using &str instead of &String
         assert_eq!(cache.get("string_key"), Some("value".to_string()));
         assert!(cache.contains("string_key"));
@@ -131,5 +136,3 @@ mod lru_tests {
         drop(cache);
     }
 }
-
-    

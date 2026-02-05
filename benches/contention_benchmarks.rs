@@ -20,7 +20,8 @@ fn bench_contention(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let mut elapsed = Duration::ZERO;
                 for _ in 0..iters {
-                    let cache = Arc::new(rt.block_on(async { Rustycache::lru(16, cap, ttl, interval) }));
+                    let cache =
+                        Arc::new(rt.block_on(async { Rustycache::lru(16, cap, ttl, interval) }));
                     let ops_per_thread = total_ops / thread_count;
                     let mut handles = vec![];
 

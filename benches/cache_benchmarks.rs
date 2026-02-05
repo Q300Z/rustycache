@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rustycache::rustycache::Rustycache;
 use std::hint::black_box;
 use std::time::Duration;
@@ -10,7 +10,7 @@ fn bench_lru(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let mut group = c.benchmark_group("Cache_LRU_Sharded");
-    
+
     group.bench_function("put", |b| {
         let cache = rt.block_on(async { Rustycache::lru(16, cap, ttl, interval) });
         let mut i = 0;
@@ -45,7 +45,7 @@ fn bench_fifo(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let mut group = c.benchmark_group("Cache_FIFO_Sharded");
-    
+
     group.bench_function("put", |b| {
         let cache = rt.block_on(async { Rustycache::fifo(16, cap, ttl, interval) });
         let mut i = 0;
@@ -80,7 +80,7 @@ fn bench_lfu(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let mut group = c.benchmark_group("Cache_LFU_Sharded");
-    
+
     group.bench_function("put", |b| {
         let cache = rt.block_on(async { Rustycache::lfu(16, cap, ttl, interval) });
         let mut i = 0;
@@ -118,7 +118,7 @@ fn bench_key_sizes(c: &mut Criterion) {
 
     for size in [16, 256, 4096] {
         let key = "a".repeat(size);
-        
+
         group.bench_with_input(format!("put_{}_bytes", size), &key, |b, k| {
             let cache = rt.block_on(async { Rustycache::lru(1, cap, ttl, interval) });
             b.iter(|| {
@@ -127,7 +127,7 @@ fn bench_key_sizes(c: &mut Criterion) {
         });
 
         group.bench_with_input(format!("get_{}_bytes", size), &key, |b, k| {
-            let cache = rt.block_on(async { 
+            let cache = rt.block_on(async {
                 let c = Rustycache::lru(1, cap, ttl, interval);
                 c.put(k.clone(), "value".to_string());
                 c

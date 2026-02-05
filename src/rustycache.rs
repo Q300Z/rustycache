@@ -1,7 +1,7 @@
+use crate::strategy::CacheStrategy;
 use crate::strategy::fifo::FIFOCache;
 use crate::strategy::lfu::LFUCache;
 use crate::strategy::lru::LRUCache;
-use crate::strategy::CacheStrategy;
 use ahash::RandomState;
 use std::borrow::Borrow;
 use std::hash::Hash;
@@ -96,7 +96,12 @@ where
     V: 'static + Send + Sync + Clone,
 {
     #[cfg(feature = "async")]
-    pub fn lru(num_shards: usize, capacity: usize, ttl: Duration, clean_interval: Duration) -> Self {
+    pub fn lru(
+        num_shards: usize,
+        capacity: usize,
+        ttl: Duration,
+        clean_interval: Duration,
+    ) -> Self {
         Self::new(num_shards, move || {
             let shard = LRUCache::new(capacity / num_shards + 1, ttl, clean_interval);
             shard.start_cleaner(clean_interval);
@@ -117,7 +122,12 @@ where
     V: 'static + Send + Sync + Clone,
 {
     #[cfg(feature = "async")]
-    pub fn fifo(num_shards: usize, capacity: usize, ttl: Duration, clean_interval: Duration) -> Self {
+    pub fn fifo(
+        num_shards: usize,
+        capacity: usize,
+        ttl: Duration,
+        clean_interval: Duration,
+    ) -> Self {
         Self::new(num_shards, move || {
             let shard = FIFOCache::new(capacity / num_shards + 1, ttl, clean_interval);
             shard.start_cleaner(clean_interval);
@@ -138,7 +148,12 @@ where
     V: 'static + Send + Sync + Clone,
 {
     #[cfg(feature = "async")]
-    pub fn lfu(num_shards: usize, capacity: usize, ttl: Duration, clean_interval: Duration) -> Self {
+    pub fn lfu(
+        num_shards: usize,
+        capacity: usize,
+        ttl: Duration,
+        clean_interval: Duration,
+    ) -> Self {
         Self::new(num_shards, move || {
             let shard = LFUCache::new(capacity / num_shards + 1, ttl, clean_interval);
             shard.start_cleaner(clean_interval);

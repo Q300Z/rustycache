@@ -118,7 +118,9 @@ where
             return;
         }
 
-        if state.map.len() >= self.capacity && let Some(oldest_idx) = state.head {
+        if state.map.len() >= self.capacity
+            && let Some(oldest_idx) = state.head
+        {
             Self::remove_node_internal(&mut state, oldest_idx);
         }
 

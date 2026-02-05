@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod lru_tests {
     use rustycache::rustycache::Rustycache;
-    use rustycache::strategy::lru::LRUCache;
     #[allow(unused_imports)]
     use rustycache::strategy::CacheStrategy;
+    use rustycache::strategy::lru::LRUCache;
     use std::time::Duration;
     #[cfg(feature = "async")]
     use tokio::time::sleep;

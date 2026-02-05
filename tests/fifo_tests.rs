@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod fifo_tests {
     use rustycache::rustycache::Rustycache;
-    use rustycache::strategy::fifo::FIFOCache;
     #[allow(unused_imports)]
     use rustycache::strategy::CacheStrategy;
+    use rustycache::strategy::fifo::FIFOCache;
     use std::time::Duration;
     #[cfg(feature = "async")]
     use tokio::time::sleep;

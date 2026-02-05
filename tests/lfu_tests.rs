@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod lfu_tests {
     use rustycache::rustycache::Rustycache;
-    use rustycache::strategy::lfu::LFUCache;
     #[allow(unused_imports)]
     use rustycache::strategy::CacheStrategy;
+    use rustycache::strategy::lfu::LFUCache;
     use std::time::Duration;
     #[cfg(feature = "async")]
     use tokio::time::sleep;

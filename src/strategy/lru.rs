@@ -143,7 +143,9 @@ where
             node.expires_at = expires_at;
             Self::push_front(&mut state, node_idx);
         } else {
-            if state.map.len() >= self.capacity && let Some(oldest_idx) = state.tail {
+            if state.map.len() >= self.capacity
+                && let Some(oldest_idx) = state.tail
+            {
                 Self::remove_node_internal(&mut state, oldest_idx);
             }
 

@@ -1,7 +1,7 @@
 [package]
 name = "rustycache"
 version = "1.0.0"
-rust-version = "1.86"
+rust-version = "1.93"
 authors = ["Q300Z"]
 description = "A simple and easy-to-use caching library for Rust."
 license = "MIT"

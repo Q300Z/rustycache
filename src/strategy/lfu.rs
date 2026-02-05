@@ -101,14 +101,17 @@ where
             }
         }
 
-        state.map.insert(key.clone(), CacheEntry {
-            key: key.clone(),
-            value,
-            expires_at: Utc::now() + chrono::Duration::from_std(self.ttl).unwrap(),
-            frequency: 1,
-        });
+        state.map.insert(
+            key.clone(),
+            CacheEntry {
+                key: key.clone(),
+                value,
+                expires_at: Utc::now() + chrono::Duration::from_std(self.ttl).unwrap(),
+                frequency: 1,
+            },
+        );
 
-        state.freq_map.entry(1).or_insert_with(HashSet::default).insert(key);
+        state.freq_map.entry(1).or_default().insert(key);
     }
 
     #[inline]
@@ -127,7 +130,12 @@ where
             }
 
             entry.frequency += 1;
-            (freq, entry.frequency, entry.value.clone(), entry.key.clone())
+            (
+                freq,
+                entry.frequency,
+                entry.value.clone(),
+                entry.key.clone(),
+            )
         } else {
             return None;
         };
@@ -140,10 +148,7 @@ where
             }
         }
 
-        state.freq_map
-            .entry(new_freq)
-            .or_insert_with(HashSet::default)
-            .insert(k_clone);
+        state.freq_map.entry(new_freq).or_default().insert(k_clone);
 
         Some(val)
     }
@@ -200,7 +205,7 @@ where
                     _ = sleep(clean_interval) => {
                         let now = Utc::now();
                         let mut state = state_clone.write();
-                        
+
                         let keys_to_remove: Vec<(K, usize)> = state.map.iter()
                             .filter_map(|(k, v)| {
                                 if v.expires_at <= now {

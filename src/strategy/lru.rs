@@ -130,7 +130,7 @@ where
     #[inline]
     fn put(&self, key: K, value: V) {
         let mut state = self.state.write();
-        
+
         // Always flush batch on put to maintain order before potential eviction
         self.apply_access_batch(&mut state);
 
@@ -143,10 +143,8 @@ where
             node.expires_at = expires_at;
             Self::push_front(&mut state, node_idx);
         } else {
-            if state.map.len() >= self.capacity {
-                if let Some(oldest_idx) = state.tail {
-                    Self::remove_node_internal(&mut state, oldest_idx);
-                }
+            if state.map.len() >= self.capacity && let Some(oldest_idx) = state.tail {
+                Self::remove_node_internal(&mut state, oldest_idx);
             }
 
             let node_idx = if let Some(idx) = state.free_indices.pop() {
@@ -188,7 +186,7 @@ where
                 let node = state.nodes[node_idx as usize].as_ref().unwrap();
                 if node.expires_at > Utc::now() {
                     let val = node.value.clone();
-                    
+
                     // Record access in buffer
                     let mut buffer = self.access_buffer.lock();
                     buffer.push(node_idx);
@@ -200,7 +198,7 @@ where
                         let mut state = self.state.write();
                         self.apply_access_batch(&mut state);
                     }
-                    
+
                     return Some(val);
                 }
             } else {
@@ -215,7 +213,13 @@ where
                 Self::remove_node_internal(&mut state, node_idx);
             } else {
                 // Was not expired after all (race condition), just return it
-                return Some(state.nodes[node_idx as usize].as_ref().unwrap().value.clone());
+                return Some(
+                    state.nodes[node_idx as usize]
+                        .as_ref()
+                        .unwrap()
+                        .value
+                        .clone(),
+                );
             }
         }
         None
@@ -278,12 +282,10 @@ where
                         let now = Utc::now();
                         let mut state = state_clone.write();
                         let mut indices_to_remove = Vec::new();
-                        
+
                         for (_, &idx) in state.map.iter() {
-                            if let Some(node) = &state.nodes[idx as usize] {
-                                if node.expires_at <= now {
-                                    indices_to_remove.push(idx);
-                                }
+                            if let Some(node) = &state.nodes[idx as usize] && node.expires_at <= now {
+                                indices_to_remove.push(idx);
                             }
                         }
 

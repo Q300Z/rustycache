@@ -118,14 +118,12 @@ where
             return;
         }
 
-        if state.map.len() >= self.capacity {
-            if let Some(oldest_idx) = state.head {
-                Self::remove_node_internal(&mut state, oldest_idx);
-            }
+        if state.map.len() >= self.capacity && let Some(oldest_idx) = state.head {
+            Self::remove_node_internal(&mut state, oldest_idx);
         }
 
         let expires_at = Utc::now() + chrono::Duration::from_std(self.ttl).unwrap();
-        
+
         let node_idx = if let Some(idx) = state.free_indices.pop() {
             state.nodes[idx as usize] = Some(Node {
                 key: key.clone(),
@@ -176,7 +174,13 @@ where
             if state.nodes[node_idx as usize].as_ref().unwrap().expires_at <= Utc::now() {
                 Self::remove_node_internal(&mut state, node_idx);
             } else {
-                return Some(state.nodes[node_idx as usize].as_ref().unwrap().value.clone());
+                return Some(
+                    state.nodes[node_idx as usize]
+                        .as_ref()
+                        .unwrap()
+                        .value
+                        .clone(),
+                );
             }
         }
         None
@@ -238,12 +242,10 @@ where
                         let now = Utc::now();
                         let mut state = state_clone.write();
                         let mut indices_to_remove = Vec::new();
-                        
+
                         for (_, &idx) in state.map.iter() {
-                            if let Some(node) = &state.nodes[idx as usize] {
-                                if node.expires_at <= now {
-                                    indices_to_remove.push(idx);
-                                }
+                            if let Some(node) = &state.nodes[idx as usize] && node.expires_at <= now {
+                                indices_to_remove.push(idx);
                             }
                         }
 

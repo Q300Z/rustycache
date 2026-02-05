@@ -7,6 +7,7 @@ use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::Duration;
 
+/// A high-performance, sharded, and thread-safe cache.
 pub struct Rustycache<K, V, S> {
     shards: Vec<S>,
     hasher: RandomState,
@@ -33,10 +34,10 @@ where
     }
 
     #[inline]
-    fn get_shard<Q>(&self, key: &Q) -> &S
+    fn get_shard<Q: ?Sized>(&self, key: &Q) -> &S
     where
         K: Borrow<Q>,
-        Q: Hash + ?Sized,
+        Q: Hash + Eq,
     {
         let mut s = self.hasher.build_hasher();
         key.hash(&mut s);
@@ -46,32 +47,36 @@ where
 
     #[inline]
     pub fn put(&self, key: K, value: V) {
-        self.get_shard(&key).put(key, value)
+        // For put, we use K directly so we can hash it
+        let mut s = self.hasher.build_hasher();
+        key.hash(&mut s);
+        let hash = s.finish();
+        self.shards[(hash as usize) % self.shards.len()].put(key, value);
     }
 
     #[inline]
-    pub fn get<Q>(&self, key: &Q) -> Option<V>
+    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
+        Q: Hash + Eq,
     {
         self.get_shard(key).get(key)
     }
 
     #[inline]
-    pub fn remove<Q>(&self, key: &Q)
+    pub fn remove<Q: ?Sized>(&self, key: &Q)
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
+        Q: Hash + Eq,
     {
         self.get_shard(key).remove(key)
     }
 
     #[inline]
-    pub fn contains<Q>(&self, key: &Q) -> bool
+    pub fn contains<Q: ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
+        Q: Hash + Eq,
     {
         self.get_shard(key).contains(key)
     }

@@ -37,6 +37,19 @@ mod lru_tests {
         assert_eq!(cache.get(&"a".to_string()), Some("value1".to_string()));
     }
 
+    #[test]
+    fn test_borrow_support() {
+        let cache = create_cache(2, 5, 60, false);
+        let key = "string_key".to_string();
+        cache.put(key, "value".to_string());
+        
+        // Lookup using &str instead of &String
+        assert_eq!(cache.get("string_key"), Some("value".to_string()));
+        assert!(cache.contains("string_key"));
+        cache.remove("string_key");
+        assert!(!cache.contains("string_key"));
+    }
+
     #[cfg(feature = "async")]
     #[tokio::test]
     async fn test_lru_eviction() {

@@ -1,5 +1,6 @@
 use ahash::AHashMap as HashMap;
 use parking_lot::Mutex;
+use std::borrow::Borrow;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
@@ -151,7 +152,11 @@ where
     }
 
     #[inline]
-    fn get(&self, key: &K) -> Option<V> {
+    fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut state = self.state.lock();
         if let Some(&node_idx) = state.map.get(key) {
             let expired = state.nodes[node_idx].as_ref().unwrap().expires_at <= Utc::now();
@@ -165,7 +170,11 @@ where
     }
 
     #[inline]
-    fn remove(&self, key: &K) {
+    fn remove<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut state = self.state.lock();
         if let Some(&node_idx) = state.map.get(key) {
             Self::remove_node_internal(&mut state, node_idx);
@@ -173,7 +182,11 @@ where
     }
 
     #[inline]
-    fn contains(&self, key: &K) -> bool {
+    fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let state = self.state.lock();
         state.map.contains_key(key)
     }

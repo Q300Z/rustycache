@@ -3,6 +3,7 @@ use crate::strategy::lfu::LFUCache;
 use crate::strategy::lru::LRUCache;
 use crate::strategy::CacheStrategy;
 use ahash::RandomState;
+use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::Duration;
 
@@ -32,7 +33,11 @@ where
     }
 
     #[inline]
-    fn get_shard(&self, key: &K) -> &S {
+    fn get_shard<Q>(&self, key: &Q) -> &S
+    where
+        K: Borrow<Q>,
+        Q: Hash + ?Sized,
+    {
         let mut s = self.hasher.build_hasher();
         key.hash(&mut s);
         let hash = s.finish();
@@ -45,17 +50,29 @@ where
     }
 
     #[inline]
-    pub fn get(&self, key: &K) -> Option<V> {
+    pub fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.get_shard(key).get(key)
     }
 
     #[inline]
-    pub fn remove(&self, key: &K) {
+    pub fn remove<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.get_shard(key).remove(key)
     }
 
     #[inline]
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.get_shard(key).contains(key)
     }
 

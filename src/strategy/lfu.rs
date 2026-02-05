@@ -1,6 +1,7 @@
 use ahash::AHashMap as HashMap;
 use ahash::AHashSet as HashSet;
 use parking_lot::Mutex;
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -15,7 +16,8 @@ use tokio::task;
 #[cfg(feature = "async")]
 use tokio::time::sleep;
 
-struct CacheEntry<V> {
+struct CacheEntry<K, V> {
+    key: K,
     value: V,
     expires_at: DateTime<Utc>,
     frequency: usize,
@@ -29,7 +31,7 @@ where
 {
     capacity: usize,
     ttl: Duration,
-    map: Arc<Mutex<HashMap<K, CacheEntry<V>>>>,
+    map: Arc<Mutex<HashMap<K, CacheEntry<K, V>>>>,
     freq_map: Arc<Mutex<BTreeMap<usize, HashSet<K>>>>,
     #[cfg(feature = "async")]
     notify_stop: Arc<Notify>,
@@ -51,7 +53,11 @@ where
         }
     }
 
-    fn remove_entry_internal(key: &K, freq: usize, map: &mut HashMap<K, CacheEntry<V>>, freq_map: &mut BTreeMap<usize, HashSet<K>>) {
+    fn remove_entry_internal<Q>(key: &Q, freq: usize, map: &mut HashMap<K, CacheEntry<K, V>>, freq_map: &mut BTreeMap<usize, HashSet<K>>)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         map.remove(key);
         if let Some(set) = freq_map.get_mut(&freq) {
             set.remove(key);
@@ -91,6 +97,7 @@ where
         }
 
         map.insert(key.clone(), CacheEntry {
+            key: key.clone(),
             value,
             expires_at: Utc::now() + chrono::Duration::from_std(self.ttl).unwrap(),
             frequency: 1,
@@ -100,7 +107,11 @@ where
     }
 
     #[inline]
-    fn get(&self, key: &K) -> Option<V> {
+    fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut map = self.map.lock();
         let mut freq_map = self.freq_map.lock();
 
@@ -122,10 +133,11 @@ where
                 }
             }
 
+            let k_clone = entry.key.clone();
             freq_map
                 .entry(new_freq)
                 .or_insert_with(HashSet::default)
-                .insert(key.clone());
+                .insert(k_clone);
 
             return Some(entry.value.clone());
         }
@@ -134,7 +146,11 @@ where
     }
 
     #[inline]
-    fn remove(&self, key: &K) {
+    fn remove<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut map = self.map.lock();
         let mut freq_map = self.freq_map.lock();
 
@@ -144,19 +160,27 @@ where
         }
     }
 
-    fn contains(&self, key: &K) -> bool {
+    #[inline]
+    fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let map = self.map.lock();
         map.contains_key(key)
     }
 
+    #[inline]
     fn len(&self) -> usize {
         let map = self.map.lock();
         map.len()
     }
+    #[inline]
     fn is_empty(&self) -> bool {
         let map = self.map.lock();
         map.is_empty()
     }
+    #[inline]
     fn clear(&self) {
         let mut map = self.map.lock();
         let mut freq_map = self.freq_map.lock();

@@ -1,7 +1,11 @@
+#[cfg(feature = "async")]
 use rustycache::rustycache::Rustycache;
+#[cfg(feature = "async")]
 use std::time::Duration;
+#[cfg(feature = "async")]
 use tokio::time::sleep;
 
+#[cfg(feature = "async")]
 #[tokio::main]
 async fn main() {
     println!("--- Example: Asynchronous Mode ---");
@@ -31,4 +35,9 @@ async fn main() {
     }
 
     println!("Cache length: {}", cache.len());
+}
+
+#[cfg(not(feature = "async"))]
+fn main() {
+    println!("This example requires the 'async' feature.");
 }

@@ -1,5 +1,5 @@
 use ahash::AHashMap as HashMap;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -18,16 +18,16 @@ struct Node<K, V> {
     key: K,
     value: V,
     expires_at: DateTime<Utc>,
-    prev: Option<usize>,
-    next: Option<usize>,
+    prev: Option<u32>,
+    next: Option<u32>,
 }
 
 struct FIFOState<K, V> {
-    map: HashMap<K, usize>,
+    map: HashMap<K, u32>,
     nodes: Vec<Option<Node<K, V>>>,
-    free_indices: Vec<usize>,
-    head: Option<usize>,
-    tail: Option<usize>,
+    free_indices: Vec<u32>,
+    head: Option<u32>,
+    tail: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -38,7 +38,7 @@ where
 {
     capacity: usize,
     ttl: Duration,
-    state: Arc<Mutex<FIFOState<K, V>>>,
+    state: Arc<RwLock<FIFOState<K, V>>>,
     #[cfg(feature = "async")]
     notify_stop: Arc<Notify>,
 }
@@ -52,7 +52,7 @@ where
         FIFOCache {
             capacity,
             ttl,
-            state: Arc::new(Mutex::new(FIFOState {
+            state: Arc::new(RwLock::new(FIFOState {
                 map: HashMap::default(),
                 nodes: Vec::with_capacity(capacity),
                 free_indices: Vec::new(),
@@ -64,42 +64,42 @@ where
         }
     }
 
-    fn detach_node(state: &mut FIFOState<K, V>, node_idx: usize) {
+    fn detach_node(state: &mut FIFOState<K, V>, node_idx: u32) {
         let (prev, next) = {
-            let node = state.nodes[node_idx].as_ref().unwrap();
+            let node = state.nodes[node_idx as usize].as_ref().unwrap();
             (node.prev, node.next)
         };
 
         if let Some(p) = prev {
-            state.nodes[p].as_mut().unwrap().next = next;
+            state.nodes[p as usize].as_mut().unwrap().next = next;
         } else {
             state.head = next;
         }
 
         if let Some(n) = next {
-            state.nodes[n].as_mut().unwrap().prev = prev;
+            state.nodes[n as usize].as_mut().unwrap().prev = prev;
         } else {
             state.tail = prev;
         }
     }
 
-    fn push_back(state: &mut FIFOState<K, V>, node_idx: usize) {
+    fn push_back(state: &mut FIFOState<K, V>, node_idx: u32) {
         let old_tail = state.tail;
         if let Some(ot) = old_tail {
-            state.nodes[ot].as_mut().unwrap().next = Some(node_idx);
+            state.nodes[ot as usize].as_mut().unwrap().next = Some(node_idx);
         } else {
             state.head = Some(node_idx);
         }
 
-        let node = state.nodes[node_idx].as_mut().unwrap();
+        let node = state.nodes[node_idx as usize].as_mut().unwrap();
         node.next = None;
         node.prev = old_tail;
         state.tail = Some(node_idx);
     }
 
-    fn remove_node_internal(state: &mut FIFOState<K, V>, node_idx: usize) {
+    fn remove_node_internal(state: &mut FIFOState<K, V>, node_idx: u32) {
         Self::detach_node(state, node_idx);
-        if let Some(node) = state.nodes[node_idx].take() {
+        if let Some(node) = state.nodes[node_idx as usize].take() {
             state.map.remove(&node.key);
             state.free_indices.push(node_idx);
         }
@@ -113,7 +113,7 @@ where
 {
     #[inline]
     fn put(&self, key: K, value: V) {
-        let mut state = self.state.lock();
+        let mut state = self.state.write();
         if state.map.contains_key(&key) {
             return;
         }
@@ -127,7 +127,7 @@ where
         let expires_at = Utc::now() + chrono::Duration::from_std(self.ttl).unwrap();
         
         let node_idx = if let Some(idx) = state.free_indices.pop() {
-            state.nodes[idx] = Some(Node {
+            state.nodes[idx as usize] = Some(Node {
                 key: key.clone(),
                 value,
                 expires_at,
@@ -136,7 +136,7 @@ where
             });
             idx
         } else {
-            let idx = state.nodes.len();
+            let idx = state.nodes.len() as u32;
             state.nodes.push(Some(Node {
                 key: key.clone(),
                 value,
@@ -157,13 +157,26 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let mut state = self.state.lock();
-        if let Some(&node_idx) = state.map.get(key) {
-            let expired = state.nodes[node_idx].as_ref().unwrap().expires_at <= Utc::now();
-            if !expired {
-                return Some(state.nodes[node_idx].as_ref().unwrap().value.clone());
+        // Try read lock
+        {
+            let state = self.state.read();
+            if let Some(&node_idx) = state.map.get(key) {
+                let node = state.nodes[node_idx as usize].as_ref().unwrap();
+                if node.expires_at > Utc::now() {
+                    return Some(node.value.clone());
+                }
             } else {
+                return None;
+            }
+        }
+
+        // Handle expiration
+        let mut state = self.state.write();
+        if let Some(&node_idx) = state.map.get(key) {
+            if state.nodes[node_idx as usize].as_ref().unwrap().expires_at <= Utc::now() {
                 Self::remove_node_internal(&mut state, node_idx);
+            } else {
+                return Some(state.nodes[node_idx as usize].as_ref().unwrap().value.clone());
             }
         }
         None
@@ -175,7 +188,7 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let mut state = self.state.lock();
+        let mut state = self.state.write();
         if let Some(&node_idx) = state.map.get(key) {
             Self::remove_node_internal(&mut state, node_idx);
         }
@@ -187,25 +200,25 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let state = self.state.lock();
+        let state = self.state.read();
         state.map.contains_key(key)
     }
 
     #[inline]
     fn len(&self) -> usize {
-        let state = self.state.lock();
+        let state = self.state.read();
         state.map.len()
     }
 
     #[inline]
     fn is_empty(&self) -> bool {
-        let state = self.state.lock();
+        let state = self.state.read();
         state.map.is_empty()
     }
 
     #[inline]
     fn clear(&self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.write();
         state.map.clear();
         state.nodes.clear();
         state.free_indices.clear();
@@ -223,11 +236,11 @@ where
                 tokio::select! {
                     _ = sleep(clean_interval) => {
                         let now = Utc::now();
-                        let mut state = state_clone.lock();
+                        let mut state = state_clone.write();
                         let mut indices_to_remove = Vec::new();
                         
                         for (_, &idx) in state.map.iter() {
-                            if let Some(node) = &state.nodes[idx] {
+                            if let Some(node) = &state.nodes[idx as usize] {
                                 if node.expires_at <= now {
                                     indices_to_remove.push(idx);
                                 }

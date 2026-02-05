@@ -4,7 +4,7 @@ use crate::strategy::lru::LRUCache;
 use crate::strategy::CacheStrategy;
 use ahash::RandomState;
 use std::borrow::Borrow;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::Hash;
 use std::time::Duration;
 
 /// A high-performance, sharded, and thread-safe cache.
@@ -34,49 +34,40 @@ where
     }
 
     #[inline]
-    fn get_shard<Q: ?Sized>(&self, key: &Q) -> &S
+    fn get_shard<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> &S
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
-        let mut s = self.hasher.build_hasher();
-        key.hash(&mut s);
-        let hash = s.finish();
+        let hash = self.hasher.hash_one(key);
         &self.shards[(hash as usize) % self.shards.len()]
     }
 
     #[inline]
     pub fn put(&self, key: K, value: V) {
-        // For put, we use K directly so we can hash it
-        let mut s = self.hasher.build_hasher();
-        key.hash(&mut s);
-        let hash = s.finish();
+        let hash = self.hasher.hash_one(&key);
         self.shards[(hash as usize) % self.shards.len()].put(key, value);
     }
 
     #[inline]
-    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<V>
+    pub fn get<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.get_shard(key).get(key)
     }
 
     #[inline]
-    pub fn remove<Q: ?Sized>(&self, key: &Q)
+    pub fn remove<Q: Hash + Eq + ?Sized>(&self, key: &Q)
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.get_shard(key).remove(key)
     }
 
     #[inline]
-    pub fn contains<Q: ?Sized>(&self, key: &Q) -> bool
+    pub fn contains<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.get_shard(key).contains(key)
     }
